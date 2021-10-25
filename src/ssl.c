@@ -8,13 +8,30 @@
 
 #include "ssl.h"
 
-SSL_CTX *ssl_init(bool gmtls) {
+int ssl_data_index;
+
+static int ssl_new_client_session(SSL *ssl, SSL_SESSION *session) {
+    connection *c = SSL_get_ex_data(ssl, ssl_data_index);
+
+    if (c->cache) {
+        if (c->cache->cached_session) {
+            SSL_SESSION_free(c->cache->cached_session);
+            c->cache->cached_session = NULL;
+        }
+        c->cache->cached_session = session;
+    }
+
+    return 1;
+}
+
+SSL_CTX *ssl_init(bool gmtls, bool session_reuse) {
     const SSL_METHOD *meth = NULL;
     SSL_CTX *ctx = NULL;
 
     SSL_load_error_strings();
     SSL_library_init();
     OpenSSL_add_all_algorithms();
+    ssl_data_index = SSL_get_ex_new_index(0, NULL, NULL, NULL, NULL);
 
     if (gmtls) {
 #if defined(BABASSL_VERSION_NUMBER) && !defined(OPENSSL_NO_NTLS)
@@ -31,7 +48,12 @@ SSL_CTX *ssl_init(bool gmtls) {
         SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, NULL);
         SSL_CTX_set_verify_depth(ctx, 0);
         SSL_CTX_set_mode(ctx, SSL_MODE_AUTO_RETRY);
-        SSL_CTX_set_session_cache_mode(ctx, SSL_SESS_CACHE_CLIENT);
+
+        if (session_reuse) {
+            SSL_CTX_set_session_cache_mode(ctx, SSL_SESS_CACHE_CLIENT |
+                                                SSL_SESS_CACHE_NO_INTERNAL);
+            SSL_CTX_sess_set_new_cb(ctx, ssl_new_client_session);
+        }
 
         if (gmtls) {
 #if defined(BABASSL_VERSION_NUMBER) && !defined(OPENSSL_NO_NTLS)
@@ -48,6 +70,11 @@ SSL_CTX *ssl_init(bool gmtls) {
 
 status ssl_connect(connection *c, char *host) {
     int r;
+
+    if (SSL_get_fd(c->ssl) != c->fd && c->cache && c->cache->cached_session) {
+        SSL_set_session(c->ssl, c->cache->cached_session);
+    }
+
     SSL_set_fd(c->ssl, c->fd);
     SSL_set_tlsext_host_name(c->ssl, host);
     if ((r = SSL_connect(c->ssl)) != 1) {
@@ -63,6 +90,8 @@ status ssl_connect(connection *c, char *host) {
 status ssl_close(connection *c) {
     SSL_shutdown(c->ssl);
     SSL_clear(c->ssl);
+    SSL_free(c->ssl);
+    c->ssl = NULL;
     return OK;
 }
 

@@ -14,6 +14,7 @@ static struct config {
     bool     dynamic;
     bool     latency;
     bool     gmtls;
+    bool     ssl_session_reuse;
     char    *host;
     char    *script;
     SSL_CTX *ctx;
@@ -50,6 +51,7 @@ static void usage() {
            "    -t, --threads     <N>  Number of threads to use   \n"
            "                                                      \n"
            "    -g, --gmtls            Use GMTLS/TLCP protocol    \n"
+           "    -r, --reuse            Enable SSL session reuse   \n"
            "    -s, --script      <S>  Load Lua script file       \n"
            "    -H, --header      <H>  Add header to request      \n"
            "        --latency          Print latency statistics   \n"
@@ -75,7 +77,7 @@ int main(int argc, char **argv) {
     char *service = port ? port : schema;
 
     if (!strncmp("https", schema, 5)) {
-        if ((cfg.ctx = ssl_init(cfg.gmtls)) == NULL) {
+        if ((cfg.ctx = ssl_init(cfg.gmtls, cfg.ssl_session_reuse)) == NULL) {
             fprintf(stderr, "unable to initialize SSL\n");
             ERR_print_errors_fp(stderr);
             exit(1);
@@ -140,7 +142,8 @@ int main(int argc, char **argv) {
     printf("Running %s test @ %s\n", time, url);
     printf("  %"PRIu64" threads and %"PRIu64" connections\n", cfg.threads, cfg.connections);
     if (cfg.ctx) {
-        printf("  HTTPS (GMTLS %s)\n", cfg.gmtls ? "enabled" : "false");
+        printf("  HTTPS: %s, SSL session reuse: %s\n",
+               cfg.gmtls ? "GMTLS" : "TLS", cfg.ssl_session_reuse ? "true" : "false");
     }
 
     uint64_t start    = time_us();
@@ -195,6 +198,19 @@ int main(int argc, char **argv) {
     printf("Requests/sec: %9.2Lf\n", req_per_s);
     printf("Transfer/sec: %10sB\n", format_binary(bytes_per_s));
 
+    if (cfg.ctx) {
+        printf("SSL: new conn %lu, reused %lu, miss %lu, finished conn %lu,\n",
+               SSL_CTX_sess_connect(cfg.ctx),
+               SSL_CTX_sess_hits(cfg.ctx),
+               SSL_CTX_sess_misses(cfg.ctx),
+               SSL_CTX_sess_connect_good(cfg.ctx));
+        printf("     sess_cb hit %lu, renegotiation %lu, timeout %lu, full remove %lu\n",
+               SSL_CTX_sess_cb_hits(cfg.ctx),
+               SSL_CTX_sess_connect_renegotiate(cfg.ctx),
+               SSL_CTX_sess_timeouts(cfg.ctx),
+               SSL_CTX_sess_cache_full(cfg.ctx));
+    }
+
     if (script_has_done(L)) {
         script_summary(L, runtime_us, complete, bytes);
         script_errors(L, &errors);
@@ -219,7 +235,6 @@ void *thread_main(void *arg) {
 
     for (uint64_t i = 0; i < thread->connections; i++, c++) {
         c->thread = thread;
-        c->ssl     = cfg.ctx ? SSL_new(cfg.ctx) : NULL;
         c->request = request;
         c->length  = length;
         c->delayed = cfg.delay;
@@ -232,6 +247,7 @@ void *thread_main(void *arg) {
     thread->start = time_us();
     aeMain(loop);
 
+    SSL_SESSION_free(thread->cache.cached_session);
     aeDeleteEventLoop(loop);
     zfree(thread->cs);
 
@@ -254,6 +270,12 @@ static int connect_socket(thread *thread, connection *c) {
 
     flags = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &flags, sizeof(flags));
+
+    if (cfg.ctx) {
+        c->ssl = cfg.ctx ? SSL_new(cfg.ctx) : NULL;
+        SSL_set_ex_data(c->ssl, ssl_data_index, c);
+        c->cache = cfg.ssl_session_reuse ? &thread->cache : NULL;
+    }
 
     flags = AE_READABLE | AE_WRITABLE;
     if (aeCreateFileEvent(loop, fd, flags, socket_connected, c) == AE_OK) {
@@ -476,6 +498,7 @@ static struct option longopts[] = {
     { "duration",    required_argument, NULL, 'd' },
     { "threads",     required_argument, NULL, 't' },
     { "gmtls",       no_argument,       NULL, 'g' },
+    { "reuse",       no_argument,       NULL, 'r' },
     { "script",      required_argument, NULL, 's' },
     { "header",      required_argument, NULL, 'H' },
     { "latency",     no_argument,       NULL, 'L' },
@@ -495,7 +518,7 @@ static int parse_args(struct config *cfg, char **url, struct http_parser_url *pa
     cfg->duration    = 10;
     cfg->timeout     = SOCKET_TIMEOUT_MS;
 
-    while ((c = getopt_long(argc, argv, "t:c:d:gs:H:T:Lrv?", longopts, NULL)) != -1) {
+    while ((c = getopt_long(argc, argv, "t:c:d:grs:H:T:Lrv?", longopts, NULL)) != -1) {
         switch (c) {
             case 't':
                 if (scan_metric(optarg, &cfg->threads)) return -1;
@@ -508,6 +531,9 @@ static int parse_args(struct config *cfg, char **url, struct http_parser_url *pa
                 break;
             case 'g':
                 cfg->gmtls = true;
+                break;
+            case 'r':
+                cfg->ssl_session_reuse = true;
                 break;
             case 's':
                 cfg->script = optarg;
