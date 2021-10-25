@@ -13,6 +13,7 @@ static struct config {
     bool     delay;
     bool     dynamic;
     bool     latency;
+    bool     gmtls;
     char    *host;
     char    *script;
     SSL_CTX *ctx;
@@ -48,6 +49,7 @@ static void usage() {
            "    -d, --duration    <T>  Duration of test           \n"
            "    -t, --threads     <N>  Number of threads to use   \n"
            "                                                      \n"
+           "    -g, --gmtls            Use GMTLS/TLCP protocol    \n"
            "    -s, --script      <S>  Load Lua script file       \n"
            "    -H, --header      <H>  Add header to request      \n"
            "        --latency          Print latency statistics   \n"
@@ -73,7 +75,7 @@ int main(int argc, char **argv) {
     char *service = port ? port : schema;
 
     if (!strncmp("https", schema, 5)) {
-        if ((cfg.ctx = ssl_init()) == NULL) {
+        if ((cfg.ctx = ssl_init(cfg.gmtls)) == NULL) {
             fprintf(stderr, "unable to initialize SSL\n");
             ERR_print_errors_fp(stderr);
             exit(1);
@@ -137,6 +139,9 @@ int main(int argc, char **argv) {
     char *time = format_time_s(cfg.duration);
     printf("Running %s test @ %s\n", time, url);
     printf("  %"PRIu64" threads and %"PRIu64" connections\n", cfg.threads, cfg.connections);
+    if (cfg.ctx) {
+        printf("  HTTPS (GMTLS %s)\n", cfg.gmtls ? "enabled" : "false");
+    }
 
     uint64_t start    = time_us();
     uint64_t complete = 0;
@@ -470,6 +475,7 @@ static struct option longopts[] = {
     { "connections", required_argument, NULL, 'c' },
     { "duration",    required_argument, NULL, 'd' },
     { "threads",     required_argument, NULL, 't' },
+    { "gmtls",       no_argument,       NULL, 'g' },
     { "script",      required_argument, NULL, 's' },
     { "header",      required_argument, NULL, 'H' },
     { "latency",     no_argument,       NULL, 'L' },
@@ -489,7 +495,7 @@ static int parse_args(struct config *cfg, char **url, struct http_parser_url *pa
     cfg->duration    = 10;
     cfg->timeout     = SOCKET_TIMEOUT_MS;
 
-    while ((c = getopt_long(argc, argv, "t:c:d:s:H:T:Lrv?", longopts, NULL)) != -1) {
+    while ((c = getopt_long(argc, argv, "t:c:d:gs:H:T:Lrv?", longopts, NULL)) != -1) {
         switch (c) {
             case 't':
                 if (scan_metric(optarg, &cfg->threads)) return -1;
@@ -499,6 +505,9 @@ static int parse_args(struct config *cfg, char **url, struct http_parser_url *pa
                 break;
             case 'd':
                 if (scan_time(optarg, &cfg->duration)) return -1;
+                break;
+            case 'g':
+                cfg->gmtls = true;
                 break;
             case 's':
                 cfg->script = optarg;

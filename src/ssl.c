@@ -8,18 +8,39 @@
 
 #include "ssl.h"
 
-SSL_CTX *ssl_init() {
+SSL_CTX *ssl_init(bool gmtls) {
+    const SSL_METHOD *meth = NULL;
     SSL_CTX *ctx = NULL;
 
     SSL_load_error_strings();
     SSL_library_init();
     OpenSSL_add_all_algorithms();
 
-    if ((ctx = SSL_CTX_new(SSLv23_client_method()))) {
+    if (gmtls) {
+#if defined(BABASSL_VERSION_NUMBER) && !defined(OPENSSL_NO_NTLS)
+        meth = NTLS_client_method();
+#else
+        fprintf(stderr, "No GMTLS support!\n");
+        exit(EXIT_FAILURE);
+#endif
+    } else {
+        meth = TLS_client_method();
+    }
+
+    if ((ctx = SSL_CTX_new(meth))) {
         SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, NULL);
         SSL_CTX_set_verify_depth(ctx, 0);
         SSL_CTX_set_mode(ctx, SSL_MODE_AUTO_RETRY);
         SSL_CTX_set_session_cache_mode(ctx, SSL_SESS_CACHE_CLIENT);
+
+        if (gmtls) {
+#if defined(BABASSL_VERSION_NUMBER) && !defined(OPENSSL_NO_NTLS)
+            SSL_CTX_enable_ntls(ctx);
+#else
+            fprintf(stderr, "No GMTLS support!\n");
+            exit(EXIT_FAILURE);
+#endif
+        }
     }
 
     return ctx;
