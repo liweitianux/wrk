@@ -3,9 +3,15 @@
 
 #include "net.h"
 
+enum {
+    SSL_TLS,
+    SSL_GMTLS,
+    SSL_RFC8998, /* TLSv1.3 + GM ciphersuite */
+};
+
 extern int ssl_data_index;
 
-SSL_CTX *ssl_init(bool, bool);
+SSL_CTX *ssl_init(int, bool);
 
 status ssl_connect(connection *, char *);
 status ssl_close(connection *);

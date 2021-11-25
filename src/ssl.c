@@ -24,7 +24,7 @@ static int ssl_new_client_session(SSL *ssl, SSL_SESSION *session) {
     return 1;
 }
 
-SSL_CTX *ssl_init(bool gmtls, bool session_reuse) {
+SSL_CTX *ssl_init(int mode, bool session_reuse) {
     const SSL_METHOD *meth = NULL;
     SSL_CTX *ctx = NULL;
 
@@ -33,7 +33,7 @@ SSL_CTX *ssl_init(bool gmtls, bool session_reuse) {
     OpenSSL_add_all_algorithms();
     ssl_data_index = SSL_get_ex_new_index(0, NULL, NULL, NULL, NULL);
 
-    if (gmtls) {
+    if (mode == SSL_GMTLS) {
 #if defined(BABASSL_VERSION_NUMBER) && !defined(OPENSSL_NO_NTLS)
         meth = NTLS_client_method();
 #else
@@ -55,11 +55,21 @@ SSL_CTX *ssl_init(bool gmtls, bool session_reuse) {
             SSL_CTX_sess_set_new_cb(ctx, ssl_new_client_session);
         }
 
-        if (gmtls) {
+        if (mode == SSL_GMTLS) {
 #if defined(BABASSL_VERSION_NUMBER) && !defined(OPENSSL_NO_NTLS)
             SSL_CTX_enable_ntls(ctx);
 #else
             fprintf(stderr, "No GMTLS support!\n");
+            exit(EXIT_FAILURE);
+#endif
+        } else if (mode == SSL_RFC8998) {
+#if defined(BABASSL_VERSION_NUMBER)
+            if (!SSL_CTX_set_ciphersuites(ctx, "TLS_SM4_GCM_SM3")) {
+                fprintf(stderr, "SSL_CTX_set_ciphersuites() failed!\n");
+                exit(EXIT_FAILURE);
+            }
+#else
+            fprintf(stderr, "No RFC8998 support!\n");
             exit(EXIT_FAILURE);
 #endif
         }

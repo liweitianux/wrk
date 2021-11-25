@@ -2,6 +2,7 @@
 
 #include "wrk.h"
 #include "script.h"
+#include "ssl.h"
 #include "main.h"
 
 static struct config {
@@ -13,8 +14,8 @@ static struct config {
     bool     delay;
     bool     dynamic;
     bool     latency;
-    bool     gmtls;
     bool     ssl_session_reuse;
+    int      ssl_mode;
     char    *host;
     char    *script;
     SSL_CTX *ctx;
@@ -51,6 +52,7 @@ static void usage() {
            "    -t, --threads     <N>  Number of threads to use   \n"
            "                                                      \n"
            "    -g, --gmtls            Use GMTLS/TLCP protocol    \n"
+           "        --rfc8998          Use RFC8998 protocol       \n"
            "    -r, --reuse            Enable SSL session reuse   \n"
            "    -s, --script      <S>  Load Lua script file       \n"
            "    -H, --header      <H>  Add header to request      \n"
@@ -77,7 +79,7 @@ int main(int argc, char **argv) {
     char *service = port ? port : schema;
 
     if (!strncmp("https", schema, 5)) {
-        if ((cfg.ctx = ssl_init(cfg.gmtls, cfg.ssl_session_reuse)) == NULL) {
+        if ((cfg.ctx = ssl_init(cfg.ssl_mode, cfg.ssl_session_reuse)) == NULL) {
             fprintf(stderr, "unable to initialize SSL\n");
             ERR_print_errors_fp(stderr);
             exit(1);
@@ -139,11 +141,19 @@ int main(int argc, char **argv) {
     sigaction(SIGINT, &sa, NULL);
 
     char *time = format_time_s(cfg.duration);
+    const char *ssl_mode;
+    if (cfg.ssl_mode == SSL_GMTLS)
+        ssl_mode = "GMTLS";
+    else if (cfg.ssl_mode == SSL_RFC8998)
+        ssl_mode = "RFC8998";
+    else
+        ssl_mode = "TLS";
+
     printf("Running %s test @ %s\n", time, url);
     printf("  %"PRIu64" threads and %"PRIu64" connections\n", cfg.threads, cfg.connections);
     if (cfg.ctx) {
         printf("  HTTPS: %s, SSL session reuse: %s\n",
-               cfg.gmtls ? "GMTLS" : "TLS", cfg.ssl_session_reuse ? "true" : "false");
+               ssl_mode, cfg.ssl_session_reuse ? "true" : "false");
     }
 
     uint64_t start    = time_us();
@@ -498,6 +508,7 @@ static struct option longopts[] = {
     { "duration",    required_argument, NULL, 'd' },
     { "threads",     required_argument, NULL, 't' },
     { "gmtls",       no_argument,       NULL, 'g' },
+    { "rfc8998",     no_argument,       NULL, 'R' },
     { "reuse",       no_argument,       NULL, 'r' },
     { "script",      required_argument, NULL, 's' },
     { "header",      required_argument, NULL, 'H' },
@@ -517,8 +528,9 @@ static int parse_args(struct config *cfg, char **url, struct http_parser_url *pa
     cfg->connections = 10;
     cfg->duration    = 10;
     cfg->timeout     = SOCKET_TIMEOUT_MS;
+    cfg->ssl_mode    = SSL_TLS;
 
-    while ((c = getopt_long(argc, argv, "t:c:d:grs:H:T:Lrv?", longopts, NULL)) != -1) {
+    while ((c = getopt_long(argc, argv, "t:c:d:grs:H:T:LrRv?", longopts, NULL)) != -1) {
         switch (c) {
             case 't':
                 if (scan_metric(optarg, &cfg->threads)) return -1;
@@ -530,7 +542,7 @@ static int parse_args(struct config *cfg, char **url, struct http_parser_url *pa
                 if (scan_time(optarg, &cfg->duration)) return -1;
                 break;
             case 'g':
-                cfg->gmtls = true;
+                cfg->ssl_mode = SSL_GMTLS;
                 break;
             case 'r':
                 cfg->ssl_session_reuse = true;
@@ -543,6 +555,9 @@ static int parse_args(struct config *cfg, char **url, struct http_parser_url *pa
                 break;
             case 'L':
                 cfg->latency = true;
+                break;
+            case 'R':
+                cfg->ssl_mode = SSL_RFC8998;
                 break;
             case 'T':
                 if (scan_time(optarg, &cfg->timeout)) return -1;
